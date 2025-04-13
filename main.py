@@ -1,5 +1,6 @@
 import csv
 import requests
+import sqlite3
 from flight import Flight
 
 AIRPORTS = {}
@@ -79,25 +80,17 @@ def main() -> None:
     for airport in airports:
         AIRPORTS[airport['IATA_CODE']] = airport
 
-    flights = load_big_csv_file('data/flights/flights.csv', 'SCHEDULED_DEPARTURE', 'DEPARTURE_TIME', 'DEPARTURE_DELAY',
-                                'YEAR', 'MONTH', 'DAY', 'ORIGIN_AIRPORT', 'DEPARTURE_DELAY', limit=80)
-
-    # PLEASE figure out a way to cache weather data, so you aren't blowing past the api call limit
-    cached_weather = {}
-    for i, f in enumerate(flights):
-        if i < 65:
-            continue
-        flight = Flight(f, AIRPORTS)
-        airport = flight.ORIGIN_AIRPORT
-        month = flight.MONTH
-        if airport not in cached_weather or month not in cached_weather[airport]:
-            weather_data = get_weather_data(flight.latitude, flight.longitude, flight.MONTH)
-            if airport not in cached_weather:
-                cached_weather[airport] = {}
-            cached_weather[airport][month] = weather_data
-        else:
-            weather_data = cached_weather[airport][month]
-        print(f'{i:>2} -> {flight.DEPARTURE_DELAY:>5}: {weather_data[flight.get_time()]}')
+    conn = sqlite3.connect('data/weather/historical_weather.sqlite')
+    with open('data/flights/flights.csv', 'r') as f:
+        reader = csv.reader(f)
+        columns = next(reader)
+        query = 'INSERT INTO flights({0}) VALUES ({1})'.format(','.join(columns), ','.join(['?']*len(columns)))
+        cur = conn.cursor()
+        for i, data in enumerate(reader, 1):
+            cur.execute(query, data)
+            if i % 100000 == 0:
+                print(f'{i:>7} / {5000000:>7}-ish')
+        conn.commit()
 
 
 if __name__ == '__main__':
