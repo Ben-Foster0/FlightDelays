@@ -2,30 +2,20 @@ import csv
 import sqlite3
 import pandas as pd
 from sklearn.linear_model import LinearRegression
-from sklearn.ensemble import GradientBoostingRegressor
+from sklearn.ensemble import GradientBoostingRegressor, HistGradientBoostingRegressor, RandomForestRegressor
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import r2_score
+from sklearn.metrics import r2_score, mean_squared_error
 import time
 import pickle
 import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 AIRPORTS = {}
-MONTH_LENGTHS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
 
 conn = sqlite3.connect('data/weather/historical_weather.sqlite')
 conn.row_factory = sqlite3.Row
 cur = conn.cursor()
-
-
-def get_weather_data(iata, year, month, day, hour):
-    cur.execute('''
-        SELECT * FROM weather
-        WHERE iata = :iata AND year = :year AND month = :month AND day = :day AND hour = :hour
-    ''', {'iata': iata, 'year': year, 'month': month, 'day': day, 'hour': hour})
-
-    result = cur.fetchone()
-    if result:
-        return dict(result)
 
 
 # loading an entire csv file as a list of dicts
@@ -36,65 +26,38 @@ def load_csv(filepath):
         return [{k: v for k, v in row.items()} for row in csv_file]  # NOQA
 
 
-def random_flights(count):
-    cur.execute('''
-        SELECT * FROM flights
-        WHERE weather_delay != '' AND departure_delay >= 0
+def combine_data(count):
+    query = '''
+        INSERT INTO combined (iata, year, month, day, hour, temperature_2m, rain, snowfall, cloud_cover, cloud_cover_low, cloud_cover_mid, cloud_cover_high, wind_speed_10m, wind_speed_100m, departure_delay)
+        SELECT flights.origin_airport, flights.year, flights.month, flights.day, weather.hour, weather.temperature_2m, weather.rain, weather.snowfall, weather.cloud_cover, weather.cloud_cover_low, weather.cloud_cover_mid, weather.cloud_cover_high, weather.wind_speed_10m, weather.wind_speed_100m, flights.weather_delay
+        FROM flights
+        JOIN weather
+            ON flights.year == weather.year
+           AND flights.month == weather.month
+           AND flights.day == weather.day
+           AND floor(flights.scheduled_departure/100) == weather.hour
+           AND flights.origin_airport == weather.iata
+        WHERE flights.weather_delay != '' AND flights.weather_delay > 0
         ORDER BY RANDOM()
         LIMIT ?;
-    ''', (2*count,))
-    flights = []
-    for _ in range(count):
-        flight = dict(cur.fetchone())
-        while flight['origin_airport'] not in AIRPORTS or not flight['departure_delay']:
-            flight = dict(cur.fetchone())
-        flights.append(flight)
-    return flights
-
-
-def append_weather_data(flight):
-    print(f'Getting weather data for flight {flight}')
-    extra = {'iata': flight['origin_airport'], 'hour': flight['scheduled_departure']//100}
-    cur.execute('''
-        SELECT * FROM weather
-        WHERE iata = :iata AND year = :year AND month = :month AND day = :day AND hour = :hour
-    ''', flight | extra)
-    result = cur.fetchone()
-    return dict(result) | flight
-
-
-def sample_flights(count):
-    t0 = time.time()
-    flights = []
-    for i, flight in enumerate(random_flights(count), 1):
-        print(f'({(time.time()-t0)/i * (count-i)}) {i:>4} / {count:>4}: ', end='')
-        flights.append(append_weather_data(flight))
-    return flights
+    '''
+    cur.execute(query, (count,))
+    conn.commit()
 
 
 def full_sample(count):
     cur.execute('''
-            SELECT * FROM flights
-            JOIN weather
-                ON flights.year == weather.year
-               AND flights.month == weather.month
-               AND flights.day == weather.day
-               AND floor(flights.scheduled_departure/100) == weather.hour
-               AND flights.origin_airport == weather.iata
-            ORDER BY RANDOM()
+            SELECT temperature_2m, rain, snowfall, cloud_cover, cloud_cover_low, cloud_cover_mid, cloud_cover_high, wind_speed_10m, wind_speed_100m, departure_delay
+            FROM combined
+            ORDER BY random()
             LIMIT ?;
         ''', (2 * count,))
-    flights = []
-    for _ in range(count):
-        flight = dict(cur.fetchone())
-        while flight['origin_airport'] not in AIRPORTS or not flight['departure_delay']:
-            flight = dict(cur.fetchone())
-        flights.append(flight)
-    return flights
+    return [dict(r) for r in cur.fetchall()]
 
 
 def to_dataframe(flights):
     fields = ['temperature_2m', 'rain', 'snowfall', 'cloud_cover', 'cloud_cover_low', 'cloud_cover_mid', 'cloud_cover_high', 'wind_speed_10m', 'wind_speed_100m', 'departure_delay']
+    # fields = ['rain', 'cloud_cover', 'wind_speed_10m', 'wind_speed_100m', 'departure_delay']
     filtered_flights = [{key: d[key] for key in fields} for d in flights]
 
     df = pd.DataFrame(filtered_flights)
@@ -102,28 +65,31 @@ def to_dataframe(flights):
 
 
 def get_model(df: pd.DataFrame, model_path):
-    df_m = df.dropna()
-
-    # X = df_m.loc[:, df_m.columns != 'departure_delay']
-    # y = df_m['departure_delay']
-    # X = df[['temperature_2m', 'rain', 'snowfall', 'cloud_cover', 'cloud_cover_low', 'cloud_cover_mid', 'cloud_cover_high', 'wind_speed_10m', 'wind_speed_100m']]
-    # y = df['departure_delay']
     X = df.iloc[:, :-1]
     y = df.iloc[:, -1]
 
-    x_train, x_test, y_train, y_test = train_test_split(X, y)  # , test_size=0.5)
+    x_train, x_test, y_train, y_test = train_test_split(X, y)
 
     # lr = LinearRegression()
-    lr = GradientBoostingRegressor()
+    # lr = GradientBoostingRegressor()
+    # lr = HistGradientBoostingRegressor()
+    lr = RandomForestRegressor()
     lr.fit(x_train, y_train)
 
     y_pred = lr.predict(x_test)
 
-    print(r2_score(y_test, y_pred))
-    # print(r2_score(y_train, y_pred))
+    print(f'r2_score: {r2_score(y_test, y_pred)}')
+    print(f'mean_squared_error: {mean_squared_error(y_test, y_pred)}')
 
     with open(model_path, 'wb') as f:
         pickle.dump(lr, f)
+
+
+def test_single_data(model_path, data):
+    with open(model_path, 'rb') as f:
+        model = pickle.load(f)
+        prediction = model.predict(data)
+        print(f'Predicted: {prediction[0]}')
 
 
 def main():
@@ -131,21 +97,15 @@ def main():
     for airport in airports:
         AIRPORTS[airport['IATA_CODE']] = airport
 
-    """flights = sample_flights(512)
+    flights = full_sample(65536)
     df = to_dataframe(flights)
 
-    get_model(df, 'models/model1.pkl')"""
-
-    with open('models/model2.pkl', 'rb') as f:
-        predictions = []
-        model = pickle.load(f)
-        for rain in range(0, 300, 10):
-            for snow in range(0, 400, 10):
-                data = np.array([[0.1, rain*0.1, snow*0.01, 64, 0, 1, 64, 11.8, 25.8]])  # [0.1, 0, 0, 64, 0, 1, 64, 11.8, 25.8]
-                prediction = model.predict(data)
-                print(f'Predicted: {prediction[0]}')
-                predictions.append((rain, snow, prediction[0].item()))
-        print(predictions)
+    corr_matrix = df.corr()
+    plt.figure(figsize=(10, 6))
+    sns.heatmap(corr_matrix, annot=True, cmap='coolwarm', fmt='.2f', linewidths=0.5)
+    plt.title('Correlations')
+    plt.savefig('heatmap.svg', format='svg', bbox_inches='tight')
+    plt.show()
 
 
 if __name__ == '__main__':
