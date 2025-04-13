@@ -7,6 +7,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import r2_score
 import time
 import pickle
+import numpy as np
 
 AIRPORTS = {}
 MONTH_LENGTHS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
@@ -37,7 +38,10 @@ def load_csv(filepath):
 
 def random_flights(count):
     cur.execute('''
-        SELECT * FROM flights ORDER BY RANDOM() LIMIT ?;
+        SELECT * FROM flights
+        WHERE weather_delay != '' AND departure_delay >= 0
+        ORDER BY RANDOM()
+        LIMIT ?;
     ''', (2*count,))
     flights = []
     for _ in range(count):
@@ -107,7 +111,7 @@ def get_model(df: pd.DataFrame, model_path):
     X = df.iloc[:, :-1]
     y = df.iloc[:, -1]
 
-    x_train, x_test, y_train, y_test = train_test_split(X, y, test_size=0.5)
+    x_train, x_test, y_train, y_test = train_test_split(X, y)  # , test_size=0.5)
 
     # lr = LinearRegression()
     lr = GradientBoostingRegressor()
@@ -116,7 +120,7 @@ def get_model(df: pd.DataFrame, model_path):
     y_pred = lr.predict(x_test)
 
     print(r2_score(y_test, y_pred))
-    print(r2_score(y_train, y_pred))
+    # print(r2_score(y_train, y_pred))
 
     with open(model_path, 'wb') as f:
         pickle.dump(lr, f)
@@ -127,12 +131,21 @@ def main():
     for airport in airports:
         AIRPORTS[airport['IATA_CODE']] = airport
 
-    flights = sample_flights(1024)
-    # flights = full_sample(64)
+    """flights = sample_flights(512)
     df = to_dataframe(flights)
-    # print(df.to_string())
 
-    get_model(df, 'models/model1.pkl')
+    get_model(df, 'models/model1.pkl')"""
+
+    with open('models/model2.pkl', 'rb') as f:
+        predictions = []
+        model = pickle.load(f)
+        for rain in range(0, 300, 10):
+            for snow in range(0, 400, 10):
+                data = np.array([[0.1, rain*0.1, snow*0.01, 64, 0, 1, 64, 11.8, 25.8]])  # [0.1, 0, 0, 64, 0, 1, 64, 11.8, 25.8]
+                prediction = model.predict(data)
+                print(f'Predicted: {prediction[0]}')
+                predictions.append((rain, snow, prediction[0].item()))
+        print(predictions)
 
 
 if __name__ == '__main__':
